@@ -1,94 +1,101 @@
-name: Build android-mkxp
+name: Build android-mkxp APK
 
-on: [workflow_dispatch]
+on:
+  push:
+    branches: [ "master" ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
       with:
-        submodules: true
+        submodules: recursive
         
-    - name: Setup JDK 11
-      uses: actions/setup-java@v4
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-        
-    - name: Setup Android SDK manually
+    - name: Show directory structure
       run: |
-        # Usa SDK já instalado no runner
-        echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-        echo "ANDROID_HOME: $ANDROID_HOME"
-        
-        # Aceita licenças
-        yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
-        
-        # Instala NDK se não existir
-        if [ ! -d "$ANDROID_SDK_ROOT/ndk/25.2.9519653" ]; then
-          $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653"
+        echo "=== ESTRUTURA ATUAL ==="
+        pwd
+        ls -la
+        echo ""
+        echo "=== EXISTE PASTA APP? ==="
+        if [ -d "app" ]; then
+          echo "✅ SIM, pasta 'app' existe!"
+          ls -la app/
+        else
+          echo "❌ NÃO, pasta 'app' NÃO existe!"
+          echo "=== Procurando por app ==="
+          find . -type d -name "app" | head -5
         fi
         
-    - name: Configure build
-      run: |
-        # Cria local.properties
-        cat > local.properties << EOF
-sdk.dir=$ANDROID_SDK_ROOT
-ndk.dir=$ANDROID_SDK_ROOT/ndk/25.2.9519653
-EOF
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
         
-        echo "=== local.properties ==="
-        cat local.properties
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+      with:
+        api-level: 33
+        build-tools-version: "33.0.2"
+        ndk-version: "25.2.9519653"
+        
+    - name: Create local.properties
+      run: |
+        echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+        echo "ndk.dir=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> local.properties
+        
+    - name: Make gradlew executable
+      run: chmod +x gradlew
         
     - name: Build APK
       run: |
-        chmod +x gradlew
+        echo "=== Iniciando build ==="
+        ./gradlew clean assembleDebug --stacktrace
         
-        # Limpa e build
-        ./gradlew clean
-        ./gradlew assembleDebug
-        
-    - name: Check APK location
+    - name: Find and list APKs
       run: |
-        echo "=== Verificando APK ==="
+        echo "=== Buscando APKs ==="
         
-        # Procura em vários locais possíveis
-        APK_PATHS=(
-          "app/build/outputs/apk/debug/*.apk"
-          "app/build/outputs/apk/*.apk"
-          "build/outputs/apk/debug/*.apk"
-          "*.apk"
-        )
+        # Primeiro, verifica o local padrão
+        DEFAULT_PATH="app/build/outputs/apk/debug"
         
-        for path in "${APK_PATHS[@]}"; do
-          if ls $path 1> /dev/null 2>&1; then
-            echo "✅ APK encontrado em: $path"
-            echo "APK_PATH=$(realpath $path)" >> $GITHUB_ENV
-            ls -lh $path
-            break
+        if [ -d "$DEFAULT_PATH" ]; then
+          echo "✅ Pasta encontrada: $DEFAULT_PATH"
+          ls -la "$DEFAULT_PATH/"
+          
+          APK_FILES=$(find "$DEFAULT_PATH" -name "*.apk" -type f 2>/dev/null)
+          if [ -n "$APK_FILES" ]; then
+            echo "✅ APK(s) encontrado(s):"
+            echo "$APK_FILES"
+            # Pega o primeiro APK encontrado
+            FIRST_APK=$(echo "$APK_FILES" | head -1)
+            echo "APK_PATH=$FIRST_APK" >> $GITHUB_ENV
+          else
+            echo "❌ Nenhum APK na pasta padrão"
           fi
-        done
-        
-        if [ -z "$APK_PATH" ]; then
-          echo "❌ Nenhum APK encontrado"
-          echo "=== Listando diretório build ==="
-          find app/build -type f -name "*.apk" 2>/dev/null || true
+        else
+          echo "❌ Pasta padrão não existe: $DEFAULT_PATH"
+          echo "=== Procurando em todo o projeto ==="
+          find . -name "*.apk" -type f 2>/dev/null | head -10 || echo "Nenhum APK encontrado"
         fi
         
-    - name: Upload APK
+    - name: Upload APK (if found)
       if: env.APK_PATH != ''
       uses: actions/upload-artifact@v4
       with:
         name: android-mkxp-apk
         path: ${{ env.APK_PATH }}
         
-    - name: Upload Build Directory (se falhar)
-      if: failure()
+    - name: Upload build directory for debugging
+      if: failure() || env.APK_PATH == ''
       uses: actions/upload-artifact@v4
       with:
-        name: build-failed-logs
+        name: debug-files
         path: |
           app/build/
           build/
